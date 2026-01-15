@@ -44,17 +44,7 @@ app.post('/api/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.rows[0].password_hash);
     if (!valid) return res.status(401).json({ error: "Wrong password" });
 
-    // const token = jwt.sign({ id: user.rows[0].id, role: user.rows[0].role,student_id: user.rows[0].student_id }, JWT_SECRET);
-    const token = jwt.sign(
-        { 
-          id: user.rows[0].id, 
-          role: user.rows[0].role,
-          student_id: user.rows[0].student_id 
-        },
-        JWT_SECRET,
-        { expiresIn: "2d" }   // 👈 Token valid for 2 days
-      );
-      
+    const token = jwt.sign({ id: user.rows[0].id, role: user.rows[0].role,student_id: user.rows[0].student_id }, JWT_SECRET);
     res.json({ token, role: user.rows[0].role });
 });
 // ==========================================
@@ -132,10 +122,6 @@ app.delete('/api/admin/sections/:id', authenticateToken, authorize(['admin']), a
     res.json({ message: "Section Deleted" });
 });
 
-
-// ==========================================
-// 4. FACULTY CRUD (UPDATED)
-// ==========================================
 
 // A. GET ALL FACULTY (Even those without accounts)
 app.get('/api/admin/faculty', authenticateToken, async (req, res) => {
@@ -247,41 +233,13 @@ app.delete('/api/admin/students/:id', authenticateToken, authorize(['admin']), a
 });
 
 app.post('/api/admin/promote-cr', authenticateToken, authorize(['admin']), async (req, res) => {
-    const { student_id, password, semester } = req.body; // Added semester
-
-    try {
-        const student = await pool.query('SELECT email FROM students WHERE id = $1', [student_id]);
-        if (student.rows.length === 0) return res.status(404).json({ error: "Student not found" });
-
-        const hash = await bcrypt.hash(password, 10);
-        
-        await pool.query(
-            'INSERT INTO users (email, password_hash, role, student_id, semester) VALUES ($1, $2, \'cr\', $3, $4)', 
-            [student.rows[0].email, hash, student_id, semester || 1] // Default to 1 if not provided
-        );
-        
-        res.json({ message: "Student promoted to Class Representative (CR)" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    const { student_id, password } = req.body;
+    const student = await pool.query('SELECT email FROM students WHERE id = $1', [student_id]);
+    const hash = await bcrypt.hash(password, 10);
+    await pool.query('INSERT INTO users (email, password_hash, role, student_id) VALUES ($1,$2,\'cr\',$3)', [student.rows[0].email, hash, student_id]);
+    res.json({ message: "Promoted to CR" });
 });
 
-app.delete('/api/admin/demote-cr/:studentId', authenticateToken, authorize(['admin']), async (req, res) => {
-    try {
-        const result = await pool.query(
-            'DELETE FROM users WHERE student_id = $1 AND role = \'cr\'', 
-            [req.params.studentId]
-        );
-
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: "User not found or not a CR" });
-        }
-
-        res.json({ message: "CR privileges removed successfully" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 // ==========================================
 // 6. COURSE CRUD
 // ==========================================
@@ -345,6 +303,8 @@ app.put('/api/faculty/regen-token', authenticateToken, authorize(['faculty']), a
 });
 
 
+
+
 app.get('/api/cr/my-courses', authenticateToken, authorize(['cr']), async (req, res) => {
     const sql = `
         SELECT DISTINCT c.*
@@ -354,7 +314,7 @@ app.get('/api/cr/my-courses', authenticateToken, authorize(['cr']), async (req, 
         WHERE s.id = $1
         ORDER BY c.course_name ASC`;
     try {
-        // console.log(req.user.student_id);
+        console.log(req.user.student_id);
         const result = await pool.query(sql, [req.user.student_id]);
         res.json(result.rows);
     } catch (err) {
@@ -362,6 +322,40 @@ app.get('/api/cr/my-courses', authenticateToken, authorize(['cr']), async (req, 
     }
 });
 
+// app.post('/api/cr/attendance', authenticateToken, authorize(['cr']), async (req, res) => {
+//     const { timetable_id, date, records, selected_course_code, is_free } = req.body;
+//     const client = await pool.connect();
+//     try {
+//         await client.query('BEGIN');
+
+//         // 1. Get Scheduled Course
+//         const tt = await client.query('SELECT course_code FROM timetable WHERE id = $1', [timetable_id]);
+//         const scheduledCourse = tt.rows[0].course_code;
+
+//         let category = 'normal';
+//         if (is_free) category = 'free';
+//         else if (selected_course_code !== scheduledCourse) category = 'swap';
+
+//         // 2. Create Session
+//         const sessSql = `
+//             INSERT INTO attendance_sessions 
+//             (timetable_id, session_date, marked_by_user_id, session_category, actual_course_code) 
+//             VALUES ($1, $2, $3, $4, $5) RETURNING id`;
+//         const sessRes = await client.query(sessSql, [timetable_id, date, req.user.id, category, selected_course_code]);
+//         const sessionId = sessRes.rows[0].id;
+
+//         // 3. Insert Records (Skip if free)
+//         if (category !== 'free') {
+//             for (let r of records) {
+//                 await client.query('INSERT INTO attendance_records (session_id, student_id, status) VALUES ($1, $2, $3)', 
+//                 [sessionId, r.id, r.status]);
+//             }
+//         }
+
+//         await client.query('COMMIT');
+//         res.json({ message: "Attendance processed", sessionId, category });
+//     } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ error: e.message }); } finally { client.release(); }
+// });
 
 
 app.post('/api/cr/attendance', authenticateToken, authorize(['cr', 'faculty', 'admin']), async (req, res) => {
@@ -519,35 +513,13 @@ app.get('/api/common/week-grid', authenticateToken, async (req, res) => {
 
 app.get('/api/common/timetable-by-class', authenticateToken, async (req, res) => {
     try {
-        let section_id = req.query.section_id;
-        let semester = req.query.semester;
+        const { section_id, semester } = req.query;
 
-        // Logic: If parameters are NOT provided, derive them from the Logged-in CR/Student
         if (!section_id || !semester) {
-            
-            if (!req.user.student_id) {
-                return res.status(403).json({ error: "Not a student/CR account, and no parameters provided." });
-            }
-
-            // Fetch Section (from Student table) and Semester (from User table)
-            const contextSql = `
-                SELECT s.section_id, u.semester 
-                FROM users u
-                JOIN students s ON u.student_id = s.id
-                WHERE u.id = $1
-            `;
-            
-            const contextRes = await pool.query(contextSql, [req.user.id]);
-
-            if (contextRes.rows.length === 0) {
-                return res.status(404).json({ error: "User details not found" });
-            }
-
-            section_id = contextRes.rows[0].section_id;
-            semester = contextRes.rows[0].semester;
+            return res.status(400).json({ error: "section_id and semester are required" });
         }
 
-        // --- Main Timetable Query ---
+        // UPDATED JOIN: t.faculty_profile_id = f.id
         const sql = `
             SELECT 
                 t.*,
@@ -555,7 +527,6 @@ app.get('/api/common/timetable-by-class', authenticateToken, async (req, res) =>
                 f.faculty_name
             FROM timetable t
             JOIN courses c ON t.course_code = c.course_code
-            -- Updated to join on Profile ID based on your new schema
             JOIN faculty_profiles f ON t.faculty_profile_id = f.id
             WHERE t.section_id = $1 AND t.semester = $2
             ORDER BY t.day, t.slot_number
@@ -565,10 +536,11 @@ app.get('/api/common/timetable-by-class', authenticateToken, async (req, res) =>
         res.json(result.rows);
 
     } catch (err) {
-        console.error("Timetable by class error:", err);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: "Internal server error" });
     }
 });
+
+
 // Get all attendance sessions for a specific timetable slot (Admin View)
 app.get('/api/admin/sessions-by-timetable/:ttId', authenticateToken, authorize(['admin']), async (req, res) => {
     try {
@@ -636,58 +608,29 @@ app.put('/api/faculty/verify/:sessionId', authenticateToken, authorize(['faculty
 
 
 
+// Get students filtered by Section (and optionally Semester if your DB supports it, otherwise Section implies the group)
 app.get('/api/admin/students-by-filter', authenticateToken, async (req, res) => {
     try {
-        const { section_id, semester } = req.query; 
+        const { section_id } = req.query; // We filter primarily by section as it contains the students
 
-        if (!section_id) {
-            return res.status(400).json({ error: "Section ID is required" });
-        }
+        if (!section_id) return res.status(400).json({ error: "Section ID is required" });
 
-        let sql = `
-            SELECT DISTINCT
-                s.id, 
-                s.roll_number, 
-                s.full_name, 
-                s.email, 
-                sec.section_name, 
-                b.batch_name, 
-                u.role,
-                u.semester as cr_semester
+        const sql = `
+            SELECT s.id, s.roll_number, s.full_name, s.email, sec.section_name, b.batch_name, u.role
             FROM students s
             JOIN sections sec ON s.section_id = sec.id
             JOIN batches b ON sec.batch_id = b.id
-            LEFT JOIN users u ON s.id = u.student_id
-        `;
-
-        let params = [section_id];
-
-        if (semester) {
-            // If semester is provided, join with timetable
-            sql += `
-                JOIN timetable t 
-                  ON s.section_id = t.section_id 
-                 AND t.semester = $2
-                WHERE s.section_id = $1
-            `;
-            params.push(semester);
-        } else {
-            // If semester is NOT provided, just filter by section
-            sql += `
-                WHERE s.section_id = $1
-            `;
-        }
-
-        sql += ` ORDER BY s.roll_number ASC`;
-
-        const result = await pool.query(sql, params);
+            LEFT JOIN users u ON s.id = u.student_id -- Join to see if they are already a CR
+            WHERE s.section_id = $1
+            ORDER BY s.roll_number ASC`;
+            
+        const result = await pool.query(sql, [section_id]);
         res.json(result.rows);
-
     } catch (err) {
-        console.error(err);
         res.status(500).json({ error: err.message });
     }
 });
+
 
 
 
@@ -747,68 +690,4 @@ app.get('/api/admin/attendance-report', authenticateToken, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-
-// GET Daily Attendance Overview (Specific Date & Section)
-app.get('/api/admin/daily-attendance-overview', authenticateToken, async (req, res) => {
-    try {
-        const { section_id, date, semester } = req.query; // date format: YYYY-MM-DD
-
-        if (!section_id || !date || !semester) {
-            return res.status(400).json({ error: "Missing parameters" });
-        }
-
-        // 1. Determine the Day of Week (e.g., 'Mon', 'Tue') to filter the timetable
-        const dayName = new Date(date).toLocaleDateString('en-US', { weekday: 'short' });
-
-        const sql = `
-            SELECT 
-                t.slot_number,
-                c.course_name AS scheduled_course_name,
-                f.faculty_name,
-                
-                -- Session Data
-                sess.id AS session_id,
-                sess.session_category,
-                sess.is_verified_by_faculty,
-                sess.actual_course_code,
-                ac.course_name AS actual_course_name, -- Name of swapped course
-                
-                -- Aggregated Counts (Subqueries for efficiency)
-                (SELECT COUNT(*)::int FROM attendance_records r WHERE r.session_id = sess.id AND LOWER(r.status) = 'present') AS present_count,
-                (SELECT COUNT(*)::int FROM attendance_records r WHERE r.session_id = sess.id AND LOWER(r.status) = 'absent') AS absent_count,
-                (SELECT COUNT(*)::int FROM attendance_records r WHERE r.session_id = sess.id) AS total_count
-
-            FROM timetable t
-            JOIN courses c ON t.course_code = c.course_code
-            JOIN faculty_profiles f ON t.faculty_profile_id = f.id
-            
-            -- Left Join to find if attendance marked for THIS specific date
-            LEFT JOIN attendance_sessions sess 
-                ON t.id = sess.timetable_id 
-                AND sess.session_date = $2::date -- $2 IS NOW THE DATE
-            
-            -- Join for swapped course name
-            LEFT JOIN courses ac ON sess.actual_course_code = ac.course_code
-
-            WHERE t.section_id = $1     -- $1 IS SECTION ID
-              AND t.semester = $3       -- $3 IS SEMESTER (Integer)
-              AND t.day = $4            -- $4 IS DAY NAME (String)
-            ORDER BY t.slot_number ASC`;
-
-        // CORRECTED PARAMETER ORDER:
-        // $1: section_id
-        // $2: date
-        // $3: semester
-        // $4: dayName
-        const result = await pool.query(sql, [section_id, date, semester, dayName]);
-        
-        res.json(result.rows);
-
-    } catch (err) {
-        console.error("Daily Overview Error:", err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 app.listen(3000, () => console.log("Server Running on 3000"));
