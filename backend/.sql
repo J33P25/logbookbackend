@@ -31,7 +31,7 @@ CREATE TABLE students (
     is_active BOOLEAN DEFAULT true
 );
 
--- 4. Login Users (Admin, Faculty, CR)
+
 CREATE TYPE user_role AS ENUM ('admin', 'faculty', 'cr');
 
 CREATE TABLE users (
@@ -39,22 +39,20 @@ CREATE TABLE users (
     email VARCHAR(150) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     role user_role NOT NULL,
-    -- If CR, link to their student record
+    
     student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Faculty Profiles (Specific info for teachers)
 CREATE TABLE faculty_profiles (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     faculty_name VARCHAR(150) NOT NULL,
     dept_id INTEGER REFERENCES departments(id),
-    -- Secret key used to verify attendance marking
+
     authorization_key VARCHAR(50) NOT NULL, 
     designation VARCHAR(100)
 );
 
--- 6. Courses & Timetable
 CREATE TABLE courses (
     course_code VARCHAR(20) PRIMARY KEY,
     course_name VARCHAR(150) NOT NULL,
@@ -81,9 +79,9 @@ CREATE TABLE attendance_sessions (
     id SERIAL PRIMARY KEY,
     timetable_id INTEGER NOT NULL REFERENCES timetable(id),
     session_date DATE NOT NULL,
-    marked_by_user_id INTEGER NOT NULL REFERENCES users(id), -- The CR who logged in
-    -- Verified becomes true when Faculty enters their authorization_key
-    is_verified_by_faculty BOOLEAN DEFAULT false,
+    marked_by_user_id INTEGER NOT NULL REFERENCES users(id), 
+
+    is_verified_by_faculty BOOLEAN DEFAULT true,
     verified_at TIMESTAMP,
     status VARCHAR(20) DEFAULT 'scheduled', -- 'scheduled', 'completed', 'cancelled'
     UNIQUE (timetable_id, session_date)
@@ -97,22 +95,7 @@ CREATE TABLE attendance_records (
     UNIQUE (session_id, student_id)
 );
 
--- 8. Swap Management
-CREATE TABLE class_swaps (
-    id SERIAL PRIMARY KEY,
-    -- The original timetable slot being swapped
-    source_timetable_id INTEGER NOT NULL REFERENCES timetable(id),
-    requesting_faculty_id INTEGER NOT NULL REFERENCES users(id),
-    target_faculty_id INTEGER REFERENCES users(id), -- Faculty taking the class
-    
-    requested_date DATE NOT NULL,
-    reason TEXT,
-    status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
-    
-    -- Admin or Target Faculty approval
-    approved_by_id INTEGER REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+
 
 ALTER TABLE faculty_profiles 
 ADD COLUMN email VARCHAR(150) UNIQUE NOT NULL;
@@ -124,7 +107,6 @@ VALUES (
     'admin'
 );
 
-"password"
 
 select * from users;
 select * from students;
@@ -138,55 +120,66 @@ update  users set student_id='1' where email='sudent@system.com';
 CREATE TABLE IF NOT EXISTS class_swaps (
     id SERIAL PRIMARY KEY,
     source_timetable_id INTEGER NOT NULL REFERENCES timetable(id),
-    requesting_faculty_id INTEGER NOT NULL REFERENCES faculty_profiles(id), -- The Original Faculty
-    target_faculty_id INTEGER REFERENCES faculty_profiles(id), -- The Substitute (NULL if Free or marked by CR without specifying)
+    requesting_faculty_id INTEGER NOT NULL REFERENCES faculty_profiles(id),
+    target_faculty_id INTEGER REFERENCES faculty_profiles(id), 
     requested_date DATE NOT NULL,
     reason TEXT,
-    status VARCHAR(20) DEFAULT 'approved', -- Auto-approved since attendance is already marked
+    status VARCHAR(20) DEFAULT 'approved', 
     approved_by_id INTEGER REFERENCES faculty_profiles(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 1. Drop existing dependent tables if they exist
-DROP TABLE IF EXISTS attendance_sessions CASCADE; -- Depends on timetable
-DROP TABLE IF EXISTS class_swaps CASCADE;         -- Depends on timetable
-DROP TABLE IF EXISTS timetable CASCADE;           -- Depends on faculty_profiles
-DROP TABLE IF EXISTS faculty_profiles CASCADE;    -- The table to fix
 
--- 2. Recreate Faculty Profiles (Decoupled from Users)
+DROP TABLE IF EXISTS attendance_sessions CASCADE; 
+DROP TABLE IF EXISTS class_swaps CASCADE;         
+DROP TABLE IF EXISTS timetable CASCADE;           
+DROP TABLE IF EXISTS faculty_profiles CASCADE;   
+
+
 CREATE TABLE faculty_profiles (
-    id SERIAL PRIMARY KEY, -- New specific ID for the profile
-    user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL, -- Can be NULL now
+    id SERIAL PRIMARY KEY, 
+    user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL, 
     faculty_name VARCHAR(150) NOT NULL,
-    email VARCHAR(255) NOT NULL, -- Email is mandatory for the directory
+    email VARCHAR(255) NOT NULL,
     dept_id INTEGER REFERENCES departments(id),
     authorization_key VARCHAR(50) NOT NULL, 
     designation VARCHAR(100)
 );
 
--- 3. Recreate Timetable (Points to Profile, not User)
+
 CREATE TABLE timetable (
     id SERIAL PRIMARY KEY,
     section_id INTEGER NOT NULL REFERENCES sections(id),
     semester INTEGER NOT NULL,
-    day VARCHAR(10) NOT NULL, -- Changed 'day_of_week' to VARCHAR for simplicity if enum not exists
+    day VARCHAR(10) NOT NULL, 
     slot_number INTEGER NOT NULL CHECK (slot_number BETWEEN 1 AND 9),
     course_code VARCHAR(20) REFERENCES courses(course_code),
-    faculty_profile_id INTEGER REFERENCES faculty_profiles(id), -- UPDATED: Points to Profile
+    faculty_profile_id INTEGER REFERENCES faculty_profiles(id), e
     room_info VARCHAR(100),
     UNIQUE (section_id, semester, day, slot_number)
 );
 
--- 4. Recreate Attendance Sessions (Needs to track who marked it - keep as User ID)
 CREATE TABLE attendance_sessions (
     id SERIAL PRIMARY KEY,
     timetable_id INTEGER REFERENCES timetable(id),
     session_date DATE NOT NULL,
-    marked_by_user_id INTEGER REFERENCES users(id), -- This must be a logged-in user (Faculty or CR)
+    marked_by_user_id INTEGER REFERENCES users(id),
     session_category VARCHAR(20) DEFAULT 'normal',
     actual_course_code VARCHAR(20),
     is_verified_by_faculty BOOLEAN DEFAULT FALSE,
     verified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS class_swaps (
+    id SERIAL PRIMARY KEY,
+    source_timetable_id INTEGER NOT NULL REFERENCES timetable(id),
+    requesting_faculty_id INTEGER NOT NULL REFERENCES faculty_profiles(id), 
+    target_faculty_id INTEGER REFERENCES faculty_profiles(id),
+    requested_date DATE NOT NULL,
+    reason TEXT,
+    status VARCHAR(20) DEFAULT 'approved', 
+    approved_by_id INTEGER REFERENCES faculty_profiles(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
