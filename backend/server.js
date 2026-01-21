@@ -1008,6 +1008,110 @@ app.get('/api/faculty/my-schedule', authenticateToken, authorize(['faculty', 'ad
     }
 });
 
+// BULK FACULTY PROFILE UPLOAD
+
+app.post('/api/admin/faculty-bulk-upload', authenticateToken, authorize(['admin']), async (req, res) => {
+    const { profiles } = req.body; // Array of {name, email, dept_id, auth_key}
+
+    if (!Array.isArray(profiles) || profiles.length === 0) {
+        return res.status(400).json({ error: "No profiles provided" });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // Prepare bulk insert values
+        const values = [];
+        const params = [];
+        let paramIndex = 1;
+
+        profiles.forEach(p => {
+            values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3})`);
+            params.push(p.name, p.email, p.dept_id, p.auth_key);
+            paramIndex += 4;
+        });
+
+        const insertSql = `
+            INSERT INTO faculty_profiles (faculty_name, email, dept_id, authorization_key)
+            VALUES ${values.join(', ')}
+        `;
+
+        await client.query(insertSql, params);
+
+        await client.query('COMMIT');
+
+        res.json({ 
+            success: true,
+            message: `${profiles.length} faculty profiles created successfully` 
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Bulk Upload Error:', err);
+
+        res.status(500).json({ 
+            error: err.message,
+            detail: err.detail || undefined
+        });
+    } finally {
+        client.release();
+    }
+});
+
+
+// OPTIMIZED BULK STUDENT UPLOAD
+
+app.post('/api/admin/student-bulk-upload', authenticateToken, authorize(['admin']), async (req, res) => {
+    const { students } = req.body; // Array of {roll, name, email, section_id}
+
+    if (!Array.isArray(students) || students.length === 0) {
+        return res.status(400).json({ error: "No students provided" });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const values = [];
+        const params = [];
+        let paramIndex = 1;
+
+        students.forEach(s => {
+            values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3})`);
+            params.push(s.roll, s.name, s.email, s.section_id);
+            paramIndex += 4;
+        });
+
+        const insertSql = `
+            INSERT INTO students (roll_number, full_name, email, section_id)
+            VALUES ${values.join(', ')}
+        `;
+
+        await client.query(insertSql, params);
+
+        await client.query('COMMIT');
+
+        res.json({ 
+            success: true,
+            message: `${students.length} students created successfully` 
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Student Bulk Upload Error:', err);
+
+        res.status(500).json({ 
+            error: err.message,
+            detail: err.detail || undefined
+        });
+    } finally {
+        client.release();
+    }
+});
+
 // ==========================================
 // CORRECTED ENDPOINT - Both 'present' AND 'late' count as attended
 // Only 'absent' is NOT attended
